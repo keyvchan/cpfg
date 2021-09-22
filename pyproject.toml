@@ -3,7 +3,7 @@ name = "cpfg"
 version = "0.1.0"
 description = "Constant Propagation For Ghidra"
 authors = ["Keyv Chan <keyvchan@gmail.com>"]
-license = "BSD-3"
+license = "BSD-3-Clause"
 
 [tool.poetry.dependencies]
 python = "^3.9"
