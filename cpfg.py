@@ -26,6 +26,7 @@ class Propgation:
 
     # Global variable
     multiequals = {}
+    visited_operation = []
 
     # package
     pcode = None
@@ -120,7 +121,7 @@ class Propgation:
         else:
             log.error("Not sat, may be a bug: %s", s)
 
-    def handle_INDIRECT(self, last_operation, s, loop_solver, loop_info, x):
+    def handle_INDIRECT(self, last_operation, s, x, is_in_a_loop):
         log.info("handle indirect: %s", last_operation)
         # Check the right value is a constant
         if last_operation.getInput(0).isConstant():
@@ -128,22 +129,6 @@ class Propgation:
         else:
 
             input0 = last_operation.getInput(0)
-
-            if loop_solver != None:
-                if loop_solver.check() != z3.sat:
-                    log.debug("unsat")
-                    print(loop_solver)
-                    result = s.model().eval(x)
-                    loop_solver.pop()
-                    log.critical("Loop terminted")
-                    log.debug(s)
-                    log.debug(result)
-
-                    return result
-                else:
-                    print(loop_solver.model())
-                    loop_solver.pop()
-                    log.debug(loop_solver)
 
             operations = self.get_INDIRECT_operation(last_operation)
             for _, opppp in enumerate(operations):
@@ -169,10 +154,11 @@ class Propgation:
             val = None
 
             s.push()
-            result = self.propgation(
-                input0, input0.getDef(), s, loop_solver, loop_info, y
-            )
-            if not isinstance(result, int):
+            result = self.propgation(input0, input0.getDef(), s, y, is_in_a_loop)
+
+            if result == None:
+                val = None
+            elif not isinstance(result, int):
                 val = result.as_long()
             else:
                 val = result
@@ -182,27 +168,8 @@ class Propgation:
             s.add(x == val)
 
             return val
-        #     if loop_solver != None:
-        #         if loop_solver.check() != z3.sat:
-        #             log.debug("unsat")
-        #             log.debug(loop_solver)
-        #             loop_solver.pop()
-        #             result = s.model().eval(x)
-        #             log.critical("Loop terminted")
-        #             log.debug(s)
-        #             log.debug(result)
 
-        #             return self.INT_MAX
-        #             # return result
-        #         else:
-        #             loop_solver.pop()
-        #             log.debug(loop_solver)
-
-        #     return self.propgation(
-        #         last_operation.getInput(0), last_operation, s, loop_solver, loop_info, y
-        #     )
-
-    def handle_COPY(self, last_operation, s, loop_solver, loop_info, x):
+    def handle_COPY(self, last_operation, s, x, is_in_a_loop):
         log.info("Handle COPY: %s", last_operation)
 
         # Check the right value is a constant
@@ -215,7 +182,7 @@ class Propgation:
             )
             s.add(x == y)
             return self.propgation(
-                last_operation.getInput(0), last_operation, s, loop_solver, loop_info, y
+                last_operation.getInput(0), last_operation, s, y, is_in_a_loop
             )
 
     def loop_check(self, last_operation):
@@ -223,77 +190,12 @@ class Propgation:
 
         block = last_operation.getParent()
 
-        op_iter = block.getIterator()
+        if block.getInSize() == 1 and block.getOutSize() == 1:
+            if block.getIn(0) == block.getOut(0):
+                log.debug("It it in a loop")
+                return True
 
-        # QUESTION: Dose loop counter can only be add?
-        last_op = None
-        for op in op_iter:
-
-            if op.getOpcode() == self.pcode.PcodeOp.BRANCH:
-
-                if last_op.getOpcode() == self.pcode.PcodeOp.INT_ADD:
-                    log.info("Found a INT_ADD in this block")
-                    if last_op.getOutput().isRegister():
-                        output_of_INT_ADD = last_op.getOutput()
-                        log.info(
-                            "The Output of a INT_ADD is register: %s", output_of_INT_ADD
-                        )
-
-                        log.info("Found a BRANCH after INT_ADD")
-                        input0 = (
-                            last_op.getInput(0)
-                            .getDef()
-                            .getInput(0)
-                            .getDef()
-                            .getInput(0)
-                        )
-                        log.debug(input0)
-
-                        times = 0
-                        b = last_op.getInput(0).getDef().getParent().getIterator()
-                        if (
-                            last_op.getInput(0)
-                            .getDef()
-                            .getInput(0)
-                            .getDef()
-                            .getOpcode()
-                            == self.pcode.PcodeOp.MULTIEQUAL
-                        ):
-                            b = (
-                                last_op.getInput(0)
-                                .getDef()
-                                .getInput(0)
-                                .getDef()
-                                .getParent()
-                                .getIterator()
-                            )
-                        for p in b:
-                            print(p)
-                            if p.getOpcode() == self.pcode.PcodeOp.CBRANCH:
-
-                                log.debug(p)
-                                condition = p.getInput(1).getDef()
-                                times = condition.getInput(1).getOffset()
-                                print(times)
-
-                        return True, {
-                            "init": 0,
-                            "times": 1,
-                            "stride": 1,
-                            "block": block,
-                            "counter_value": 0,
-                        }
-                    else:
-                        log.info(
-                            "output of INT_ADD is not a register, it may not a loop"
-                        )
-                else:
-                    log.info("last_op is not a INT_ADD, it may not a loop")
-            else:
-                log.info("BRANCH not found")
-            last_op = op
-
-        return False, None
+        return False
 
     def check_condition(self, input, original_op):
         log.info("Checking condition of %s", input)
@@ -303,14 +205,11 @@ class Propgation:
         # Does this CBRANCH is loop initilizer
         is_loop = False
 
-        if (
-            last_operation.getInput(0).getDef().getOpcode()
-            == self.pcode.PcodeOp.MULTIEQUAL
-        ):
-            log.info("the next operation is a multiequal")
-            if last_operation.getInput(0).getDef().getInputs()[-1].isRegister():
-                log.info("The last input of multiequal is a register")
-                is_loop = True
+        block = original_op.getParent()
+        if block.getInSize() == 2 and block.getOutSize() == 2:
+            if block.getIn(1) == block.getOut(1):
+                log.debug("loop initilizer")
+            is_loop = True
 
         if is_loop:
             return True
@@ -325,7 +224,7 @@ class Propgation:
             if last_operation.getOpcode() == self.pcode.PcodeOp.INT_SLESS:
                 log.info("It is a INT_SLESS, checking %s < %s", y, z)
                 value = self.propgation(
-                    last_operation.getInput(0), last_operation, s, None, None, y
+                    last_operation.getInput(0), last_operation, s, y, False
                 )
                 s.add(y < z, y == value, z == input1.getOffset())
                 if s.check() == z3.sat:
@@ -333,9 +232,9 @@ class Propgation:
                     log.debug("%s < %s is %s", y, z, result)
                     return result
             elif last_operation.getOpcode() == self.pcode.PcodeOp.INT_NOTEQUAL:
-                log.info("It is a INT_NOTEQUAL, checking %s < %s", y, z)
+                log.info("It is a INT_NOTEQUAL, checking %s != %s", y, z)
                 value = self.propgation(
-                    last_operation.getInput(0), last_operation, s, None, None, y
+                    last_operation.getInput(0), last_operation, s, y, False
                 )
                 if isinstance(value, Uncertain):
                     log.debug("The value can't be determained")
@@ -347,9 +246,9 @@ class Propgation:
                         log.debug("%s != %s is %s", y, z, result)
                         return result
             elif last_operation.getOpcode() == self.pcode.PcodeOp.INT_EQUAL:
-                log.info("It is a INT_EQUAL, checking %s < %s", y, z)
+                log.info("It is a INT_EQUAL, checking %s = %s", y, z)
                 value = self.propgation(
-                    last_operation.getInput(0), last_operation, s, None, None, y
+                    last_operation.getInput(0), last_operation, s, y, False
                 )
 
                 if isinstance(value, Uncertain):
@@ -366,10 +265,13 @@ class Propgation:
                 log.error("Not implementated yet")
 
     # TODO: need more attentation.
-    def handle_MULTIEQUAL(
-        self, last_operation, s: z3.Solver, loop_solver, loop_info, x
-    ):
+    def handle_MULTIEQUAL(self, last_operation, s: z3.Solver, x, is_in_a_loop):
         log.info("handle MULTIEQUAL: %s", last_operation)
+        if last_operation not in self.visited_operation:
+            self.visited_operation.append(last_operation)
+        else:
+            log.debug("Terminted due to duplicate operation")
+            return None
 
         log.debug("%s, %s", self.multiequals, last_operation.getSeqnum().toString())
         inputs = []
@@ -415,7 +317,7 @@ class Propgation:
                     if stop_op.getOpcode() == self.pcode.PcodeOp.CBRANCH:
                         log.debug("Found a cbranch: %s", stop_op)
 
-                        result = self.check_condition(stop_op.getInput(1), None)
+                        result = self.check_condition(stop_op.getInput(1), stop_op)
                         if result == True:
                             log.debug(
                                 "condition is True, start branch analysis, this input is valid"
@@ -427,15 +329,8 @@ class Propgation:
                                         log.debug("depth < 0, it is a succcesser block")
                                         # print("depth: ", block.calcDepth(last_block))
                                         s.push()
-                                        if loop_solver != None:
-                                            loop_solver.push()
                                         result = self.propgation(
-                                            input,
-                                            last_operation,
-                                            s,
-                                            loop_solver,
-                                            loop_info,
-                                            x,
+                                            input, last_operation, s, x, is_in_a_loop
                                         )
                                         if result != None:
                                             log.info(
@@ -452,8 +347,6 @@ class Propgation:
                                             value = result
 
                                         s.pop()
-                                        if loop_solver != None:
-                                            loop_solver.pop()
                                     else:
                                         log.info("depth > 0, ignore this input")
                             else:
@@ -461,10 +354,8 @@ class Propgation:
                                     "last_block is None, %s is the first input", input
                                 )
                                 s.push()
-                                if loop_solver != None:
-                                    loop_solver.push()
                                 result = self.propgation(
-                                    input, last_operation, s, loop_solver, loop_info, x
+                                    input, last_operation, s, x, is_in_a_loop
                                 )
                                 inputX = {
                                     "value": result,
@@ -476,8 +367,6 @@ class Propgation:
                                 if result != None:
                                     value = result
                                 s.pop()
-                                if loop_solver != None:
-                                    loop_solver.pop()
                                 last_block = block
 
                             log.debug(value)
@@ -487,25 +376,21 @@ class Propgation:
                                 "The condition is uncertain, need to perserve the value"
                             )
                             s.push()
-                            if loop_solver != None:
-                                loop_solver.push()
                             result = self.propgation(
-                                input, last_operation, s, loop_solver, loop_info, x
+                                input, last_operation, s, x, is_in_a_loop
                             )
                             inputX = {
                                 "value": result,
                                 "postion": postion,
                             }
                             inputs[i] = inputX
-                            postion = postion + 1
+                            postion = postion
                             value = result
                             if result != None:
                                 value = result
                             if result != None:
                                 uncertain_values.append(result)
                             s.pop()
-                            if loop_solver != None:
-                                loop_solver.pop()
                             last_block = block
 
                         else:
@@ -515,10 +400,8 @@ class Propgation:
                     else:
                         log.info("input not from cbranch, do the normal analysis")
                         s.push()
-                        if loop_solver != None:
-                            loop_solver.push()
                         result = self.propgation(
-                            input, last_operation, s, loop_solver, loop_info, x
+                            input, last_operation, s, x, is_in_a_loop
                         )
                         inputX = {
                             "value": result,
@@ -529,8 +412,6 @@ class Propgation:
                         if result != None:
                             value = result
                         s.pop()
-                        if loop_solver != None:
-                            loop_solver.pop()
                         last_block = block
 
                 else:
@@ -538,11 +419,7 @@ class Propgation:
                         "block has multiple or zero in blocks, it could be a entry block"
                     )
                     s.push()
-                    if loop_solver != None:
-                        loop_solver.push()
-                    result = self.propgation(
-                        input, last_operation, s, loop_solver, loop_info, x
-                    )
+                    result = self.propgation(input, last_operation, s, x, is_in_a_loop)
                     inputX = {
                         "value": result,
                         "postion": postion,
@@ -552,8 +429,6 @@ class Propgation:
                     if result != None:
                         value = result
                     s.pop()
-                    if loop_solver != None:
-                        loop_solver.pop()
                 last_block = block
             else:
                 log.info("last operation is None")
@@ -572,23 +447,26 @@ class Propgation:
             if value in uncertain_values:
                 log.info("value in uncertain_values, found the maxium")
             else:
-
                 # TODO: Rewrite it when avaiable
                 if value == None:
                     value = 0
-                if not isinstance(value, int):
-                    value = value.as_long()
+                # if not isinstance(value, int):
+                #     value = value.as_long()
 
                 log.info("value not in uncertain_values, found the maxium")
-                # simple bubble sort
-                for i in uncertain_values:
-                    if isinstance(i, int):
-                        if value < i:
-                            value = i
-                    else:
-                        log.debug("Data conversion")
-                        if value < i.as_long():
-                            value = i
+
+            if not isinstance(value, int):
+                value = value.as_long()
+
+            # simple bubble sort
+            for i in uncertain_values:
+                if isinstance(i, int):
+                    if value < i:
+                        value = i
+                else:
+                    log.debug("Data conversion")
+                    if value < i.as_long():
+                        value = i
 
         else:
             log.info("Uncertain value is None")
@@ -602,7 +480,7 @@ class Propgation:
     def handle_Unique(self, operation, s, x):
         log.error("Not implementated yet: %s", operation)
 
-    def handle_CALL(self, operation, s, x):
+    def handle_CALL(self, operation, s, x, is_in_a_loop):
         log.info("handle function CALL: %s", operation)
 
         # print("Found CALL: ", s)
@@ -654,7 +532,9 @@ class Propgation:
                             return self.handle_Address(op.getInput(1), s, x)
                         elif op.getInput(1).isRegister():
                             log.warning("It is parameter: %s", op.getInput(1))
-                            return self.propgation(op.getInput(1), op, s, x)
+                            return self.propgation(
+                                op.getInput(1), op, s, x, is_in_a_loop
+                            )
                     elif op.getNumInputs() == 1:
                         if op.getInput(0).isConstant():
                             log.info(
@@ -683,7 +563,7 @@ class Propgation:
                     high = self.decompile(f1)
                     ops = high.getPcodeOps(instruct.getAddress())
                     for i in ops:
-                        result = self.propgation(i.getInput(0), i, s, x)
+                        result = self.propgation(i.getInput(0), i, s, x, is_in_a_loop)
                         return result
         log.debug("No write, may ba a pre-defined global variable")
 
@@ -693,7 +573,7 @@ class Propgation:
         log.debug("The value in %s is %s", input, value)
         return value
 
-    def handle_LOAD(self, operation, s, x):
+    def handle_LOAD(self, operation, s, x, is_in_a_loop):
         log.info("handle LOAD: %s", operation)
 
         # Found store in current function
@@ -703,7 +583,7 @@ class Propgation:
         for op in ops:
             if op.getOpcode() == self.pcode.PcodeOp.STORE:
                 log.debug("Found the store in current function")
-                return self.propgation(op.getInput(2), operation, s, x)
+                return self.propgation(op.getInput(2), operation, s, x, is_in_a_loop)
         log.info("Load not found in current function")
 
         log.info("Okay, the input is parameter or a global variables, do the rest")
@@ -722,7 +602,7 @@ class Propgation:
                         log.info("Found a store in Paraents function")
                         log.debug("op: %s", op)
 
-                        return self.propgation(op.getInput(2), op, s, x)
+                        return self.propgation(op.getInput(2), op, s, x, is_in_a_loop)
 
                 log.debug("Not found a store, use found the indirect instead")
                 ops = fffhigh.getPcodeOps()
@@ -732,7 +612,7 @@ class Propgation:
                         op1 = self.get_INDIRECT_operation(op)
                         for opppp in op1:
                             if opppp.getOpcode() == self.pcode.PcodeOp.COPY:
-                                return self.handle_COPY(opppp, s, x)
+                                return self.handle_COPY(opppp, s, x, is_in_a_loop)
                 log.info("Not found INDIRECT either, it could be any value")
                 return uncertain
 
@@ -744,53 +624,33 @@ class Propgation:
             else:
                 log.error("Not cover yet")
 
-    def handle_loop(self, current_operation):
-        log.info("Handle loop: %s", current_operation.getParent())
-        pass
-
-    def handle_INT_ADD(self, current_operation, s, loop_solver, loop_info, x):
+    def handle_INT_ADD(self, current_operation, s, x, is_in_a_loop):
         log.info("Handle INT_ADD: %s", current_operation)
         input0 = current_operation.getInput(0)
         input1 = current_operation.getInput(1)
-
-        if loop_solver != None:
-            if loop_solver.check() != z3.sat:
-                log.debug("unsat")
-                print(loop_solver)
-                result = s.model().eval(x)
-                loop_solver.pop()
-                log.critical("Loop terminted")
-                log.debug(s)
-                log.debug(result)
-
-                return result
-            else:
-                loop_solver.pop()
-                log.debug(loop_solver)
 
         y = z3.BitVec(input0.toString(), input0.getSize() * 8)
         z = z3.BitVec(input1.toString(), input1.getSize() * 8)
         val = None
         if input0.isConstant():
             s.push()
-            result = self.propgation(
-                input1, input1.getDef(), s, loop_solver, loop_info, z
-            )
-            if not isinstance(result, int):
+            result = self.propgation(input1, input1.getDef(), s, z, is_in_a_loop)
+            if result != None:
+                val = None
+            elif not isinstance(result, int):
                 val = input0.getOffset() + result.as_long()
             else:
                 val = input0.getOffset() + result
 
             s.pop()
-            print(val)
             s.add(x == val)
 
         if input1.isConstant():
             s.push()
-            result = self.propgation(
-                input0, input0.getDef(), s, loop_solver, loop_info, y
-            )
-            if not isinstance(result, int):
+            result = self.propgation(input0, input0.getDef(), s, y, is_in_a_loop)
+            if result == None:
+                val = None
+            elif not isinstance(result, int):
                 val = input1.getOffset() + result.as_long()
             else:
                 val = input1.getOffset() + result
@@ -801,68 +661,96 @@ class Propgation:
 
         return val
 
-    def propgation(
-        self, varnode, current_operation, s: z3.Solver, loop_solver, loop_info, x
-    ):
+    def loop_info(self, last_operation):
+        block = last_operation.getParent().getIn(0)
+        iter = block.getIterator()
+
+        for op in iter:
+            if op.getOpcode() == self.pcode.PcodeOp.CBRANCH:
+                print(op)
+                print(op.getInput(1))
+                print(op.getInput(1).getDef())
+                print(op.getInput(1).getDef().getInput(0).getDef())
+
+                init = (
+                    op.getInput(1)
+                    .getDef()
+                    .getInput(0)
+                    .getDef()
+                    .getInput(0)
+                    .getDef()
+                    .getInput(0)
+                    .getOffset()
+                )
+                stride = (
+                    op.getInput(1)
+                    .getDef()
+                    .getInput(0)
+                    .getDef()
+                    .getInput(1)
+                    .getDef()
+                    .getInput(1)
+                    .getOffset()
+                )
+
+                return {
+                    "times": op.getInput(1).getOffset(),
+                    "init": init,
+                    "stride": stride,
+                }
+
+    def propgation(self, varnode, current_operation, s: z3.Solver, x, is_in_a_loop):
         log.info("Propgation on %s", varnode)
-        last_operation = varnode.getDef()
-        log.debug(
-            "Last operation is: %s %s", last_operation.getSeqnum(), last_operation
-        )
 
-        is_in_a_loop, info = self.loop_check(last_operation)
+        if is_in_a_loop == None:
+            is_in_a_loop = self.loop_check(current_operation)
+
         if is_in_a_loop:
-            log.warning("It is in a loop")
+            log.warning("It is in a loop, start loop summarization")
+            info = self.loop_info(current_operation)
+            print(info)
+            stride = info["stride"]
+            times = info["times"]
 
-            # First time enter the loop
-            if loop_solver == None:
-                log.critical("loop solver is None, make a new one")
-                loop_info = {}
-                loop_solver = z3.Solver()
-                loop_info["times"] = info["times"]
-                loop_info["stride"] = info["stride"]
-                loop_info["init"] = info["init"]
-                loop_info["block"] = info["block"]
-                loop_info["counter_value"] = info["counter_value"]
+            init_value_solver = z3.Solver()
+            x = z3.BitVec(varnode.toString(), varnode.getSize() * 8)
 
-                counter = z3.Int("counter")
-                loop_info["counter"] = counter
-                loop_solver.add(counter < loop_info["times"])
-            if loop_solver != None:
-                if not loop_info["block"] == current_operation.getParent():
-                    log.debug("enter loop")
-                    counter = loop_info["counter"]
-                    log.debug("+1")
-                    counter_value = loop_info["counter_value"] + loop_info["stride"]
-                    loop_info["counter_value"] = counter_value
-                    loop_solver.push()
-                    loop_solver.add(counter == counter_value)
+            value = self.propgation(
+                varnode, current_operation, init_value_solver, x, False
+            )
 
-            log.debug(loop_solver)
+            if not isinstance(value, int):
+                value = value.as_long()
+
+            if current_operation.getOpcode() == self.pcode.PcodeOp.INT_ADD:
+                result = value + stride * times
+                return result
+            else:
+                log.error("Not handled yet")
+
         else:
             log.warning("It is not in a loop")
 
+        last_operation = varnode.getDef()
+
         if last_operation != None:
+            log.debug(
+                "Last operation is: %s %s", last_operation.getSeqnum(), last_operation
+            )
             op_code = last_operation.getOpcode()
             result = None
             if op_code == self.pcode.PcodeOp.INDIRECT:
-                result = self.handle_INDIRECT(
-                    last_operation, s, loop_solver, loop_info, x
-                )
+                result = self.handle_INDIRECT(last_operation, s, x, is_in_a_loop)
             elif op_code == self.pcode.PcodeOp.COPY:
-                result = self.handle_COPY(last_operation, s, loop_solver, loop_info, x)
+                result = self.handle_COPY(last_operation, s, x, is_in_a_loop)
             elif op_code == self.pcode.PcodeOp.MULTIEQUAL:
-                result = self.handle_MULTIEQUAL(
-                    last_operation, s, loop_solver, loop_info, x
-                )
+                result = self.handle_MULTIEQUAL(last_operation, s, x, is_in_a_loop)
             elif op_code == self.pcode.PcodeOp.CALL:
-                result = self.handle_CALL(last_operation, s, loop_solver, loop_info, x)
+                result = self.handle_CALL(last_operation, s, x, is_in_a_loop)
             elif op_code == self.pcode.PcodeOp.LOAD:
-                result = self.handle_LOAD(last_operation, s, loop_solver, loop_info, x)
+                result = self.handle_LOAD(last_operation, s, x, is_in_a_loop)
             elif op_code == self.pcode.PcodeOp.INT_ADD:
-                result = self.handle_INT_ADD(
-                    last_operation, s, loop_solver, loop_info, x
-                )
+                result = self.handle_INT_ADD(last_operation, s, x, is_in_a_loop)
             else:
                 log.error("Not impLementated yet: %s", last_operation.getMnemonic())
 
@@ -875,6 +763,8 @@ class Propgation:
 
     def constant_propgation(self, varnode, operation):
         # taking consider of all indirect operation
+        self.multiequals.clear()
+        self.visited_operation.clear()
 
         s = z3.Solver()
         x = z3.BitVec(varnode.toString(), varnode.getSize() * 8)
@@ -890,8 +780,8 @@ class Propgation:
                 else:
                     log.debug("It's not a INDIRECT: %s", desc)
 
-        for operation in self.INDIRECT_list:
-            ops = self.get_INDIRECT_operation(operation)
+        for operation_temp in self.INDIRECT_list:
+            ops = self.get_INDIRECT_operation(operation_temp)
             for _, op in enumerate(ops):
                 if op.getOpcode() == self.pcode.PcodeOp.CALL:
                     func = self.getFunctionAt(op.getInput(0).getAddress())
@@ -909,5 +799,7 @@ class Propgation:
 
         log.debug("INDIRECT is not releated to %s", varnode)
         # User input source not found, fallback to normal analysis.
-        result = self.propgation(varnode, operation, s, None, None, x)
+        result = self.propgation(varnode, operation, s, x, None)
+        self.multiequals.clear()
+        self.visited_operation.clear()
         return result
