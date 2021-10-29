@@ -1,4 +1,5 @@
 import z3
+import z3_warpper
 
 from rich.logging import RichHandler
 import typing
@@ -19,18 +20,6 @@ GhidraVariable = typing.Any
 PcodeOperation = typing.Any
 GhidraGlobalFunction = typing.Callable
 PcodeVarnode = typing.Any
-
-
-def AddEqual(s, x, y):
-    if x.size() < y.size():
-        log.debug("ext")
-        s.add(z3.SignExt(y.size() - x.size(), x) == y)
-    elif x.size() > y.size():
-        log.debug("ext")
-        s.add(z3.SignExt(x.size() - y.size(), y) == x)
-    else:
-        log.debug("un ext")
-        s.add(x == y)
 
 
 class Propgation:
@@ -128,7 +117,7 @@ class Propgation:
         val = z3.BitVecVal(input.getOffset(), input.getSize() * 8)
 
         # A very clumsy way to fit the size requirement, should do better.
-        AddEqual(s, x, y)
+        z3_warpper.equal(s, x, y)
 
         s.add(y == val)
         return val
@@ -157,7 +146,7 @@ class Propgation:
                 last_operation.getInput(0).getSize() * 8,
                 # self.bit_size,
             )
-            AddEqual(s, x, y)
+            z3_warpper.equal(s, x, y)
             block = last_operation.getParent()
             iter = block.getIterator()
             for op1 in iter:
@@ -201,7 +190,7 @@ class Propgation:
                 last_operation.getInput(0).toString(),
                 self.bit_size,
             )
-            AddEqual(s, x, y)
+            z3_warpper.equal(s, x, y)
             return self.propgation(
                 last_operation.getInput(0), last_operation, s, y, is_in_a_loop
             )
@@ -218,7 +207,7 @@ class Propgation:
                 last_operation.getInput(0).getSize() * 8,
             )
             log.debug(y.size())
-            AddEqual(s, x, y)
+            z3_warpper.equal(s, x, y)
             result = self.propgation(
                 last_operation.getInput(0), last_operation, s, y, is_in_a_loop
             )
@@ -348,7 +337,7 @@ class Propgation:
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                AddEqual(s, z, input1_val)
+                z3_warpper.equal(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(y < z)
                     log.debug("%s < %s is %s", y, z, result)
@@ -358,7 +347,7 @@ class Propgation:
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                AddEqual(s, z, input1_val)
+                z3_warpper.equal(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(z3.ULT(y, z))
                     log.debug("%s < %s is %s", y, z, result)
@@ -367,7 +356,7 @@ class Propgation:
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                AddEqual(s, z, input1_val)
+                z3_warpper.equal(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(y != z)
                     log.debug("%s != %s is %s", y, z, result)
@@ -379,7 +368,7 @@ class Propgation:
 
                 block = last_operation.getParent()
 
-                AddEqual(s, z, input1_val)
+                z3_warpper.equal(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(y == z)
                     log.debug("%s == %s is %s", y, z, result)
@@ -477,7 +466,7 @@ class Propgation:
                                         y = z3.BitVec(
                                             input.toString(), input.getSize() * 8
                                         )
-                                        AddEqual(s, x, y)
+                                        z3_warpper.equal(s, x, y)
                                         result = self.propgation(
                                             input, last_operation, s, y, is_in_a_loop
                                         )
@@ -504,7 +493,7 @@ class Propgation:
                                 )
                                 s.push()
                                 y = z3.BitVec(input.toString(), input.getSize() * 8)
-                                AddEqual(s, x, y)
+                                z3_warpper.equal(s, x, y)
                                 result = self.propgation(
                                     input, last_operation, s, y, is_in_a_loop
                                 )
@@ -528,7 +517,7 @@ class Propgation:
                             )
                             s.push()
                             y = z3.BitVec(input.toString(), input.getSize() * 8)
-                            AddEqual(s, x, y)
+                            z3_warpper.equal(s, x, y)
                             result = self.propgation(
                                 input, last_operation, s, y, is_in_a_loop
                             )
@@ -554,7 +543,7 @@ class Propgation:
                         log.info("input not from cbranch, do the normal analysis")
                         s.push()
                         y = z3.BitVec(input.toString(), input.getSize() * 8)
-                        AddEqual(s, x, y)
+                        z3_warpper.equal(s, x, y)
                         result = self.propgation(
                             input, last_operation, s, y, is_in_a_loop
                         )
@@ -575,7 +564,7 @@ class Propgation:
                     )
                     s.push()
                     y = z3.BitVec(input.toString(), input.getSize() * 8)
-                    AddEqual(s, x, y)
+                    z3_warpper.equal(s, x, y)
                     result = self.propgation(input, last_operation, s, y, is_in_a_loop)
                     inputX = {
                         "value": result,
@@ -623,7 +612,7 @@ class Propgation:
         if value != None:
 
             # print(x.size(), value.size())
-            AddEqual(s, x, value)
+            z3_warpper.equal(s, x, value)
 
             log.debug(value.as_signed_long())
 
@@ -692,7 +681,7 @@ class Propgation:
             #     operation.getInput(1).getDef().getInput(0).getDef().getSeqnum(),
             #     operation.getInput(1).getDef().getInput(0).getDef(),
             # )
-            AddEqual(s, x, y)
+            z3_warpper.equal(s, x, y)
             input1 = self.propgation(
                 operation.getInput(1), operation, s, y, is_in_a_loop
             )
@@ -775,14 +764,14 @@ class Propgation:
         log.debug("The value in %s is %s", input, value)
 
         value = z3.BitVecVal(value, x.size())
-        AddEqual(s, x, value)
+        z3_warpper.equal(s, x, value)
         return value
 
     def handle_Register(self, input, s, x):
         log.info("handle Register")
         reg = self.func.getProgram().getRegister(input.getAddress(), input.getSize())
         y = z3.BitVec(input.toString(), input.getSize() * 8)
-        AddEqual(s, x, y)
+        z3_warpper.equal(s, x, y)
 
         value = z3.BitVecVal(reg.getBitLength(), self.bit_size)
         s.add(y == value)
@@ -860,7 +849,7 @@ class Propgation:
 
             value = z3.BitVecVal(val, self.bit_size)
             s.pop()
-            AddEqual(s, x, value)
+            z3_warpper.equal(s, x, value)
 
         if input1.isConstant():
             s.push()
@@ -879,7 +868,7 @@ class Propgation:
                 value = z3.BitVecVal(val, self.bit_size)
 
                 s.pop()
-                AddEqual(s, x, value)
+                z3_warpper.equal(s, x, value)
 
                 return value
 
@@ -903,7 +892,7 @@ class Propgation:
 
             value = z3.BitVecVal(val, self.bit_size)
             s.pop()
-            AddEqual(s, x, val)
+            z3_warpper.equal(s, x, val)
 
         if input1.isConstant():
             s.push()
@@ -922,7 +911,7 @@ class Propgation:
                 value = z3.BitVecVal(val, self.bit_size)
 
                 s.pop()
-                AddEqual(s, x, value)
+                z3_warpper.equal(s, x, value)
 
                 return value
 
@@ -985,7 +974,7 @@ class Propgation:
         val = input0 & input1.getOffset()
         s.pop()
 
-        AddEqual(s, x, val)
+        z3_warpper.equal(s, x, val)
 
         return val
 
@@ -1008,7 +997,7 @@ class Propgation:
                 val = input0.getOffset() % result.as_signed_long()
 
             s.pop()
-            AddEqual(s, x, val)
+            z3_warpper.equal(s, x, val)
 
         if input1.isConstant():
             s.push()
@@ -1019,7 +1008,7 @@ class Propgation:
                 val = result.as_signed_long() % input1.getOffset()
 
             s.pop()
-            AddEqual(s, x, val)
+            z3_warpper.equal(s, x, val)
 
         return val
 
@@ -1034,7 +1023,7 @@ class Propgation:
         # x = z3.SignExt(size - x.size(), x)
         y = z3.BitVec(input0.toString(), input0.getSize() * 8)
 
-        AddEqual(s, x, y)
+        z3_warpper.equal(s, x, y)
         return self.propgation(input0, last_operation, s, y, is_in_a_loop)
 
     def handle_CALLIND(self, last_operation, s, x, is_in_a_loop):
@@ -1044,7 +1033,7 @@ class Propgation:
 
         # Check the right value is a constant
         y = z3.BitVec(input0.toString(), input0.getSize() * 8)
-        AddEqual(s, x, y)
+        z3_warpper.equal(s, x, y)
 
         return self.propgation(input0, last_operation, s, y, is_in_a_loop)
 
@@ -1094,7 +1083,7 @@ class Propgation:
                                     desss.getInput(2).toString(),
                                     desss.getInput(2).getSize() * 8,
                                 )
-                                AddEqual(s, x, y)
+                                z3_warpper.equal(s, x, y)
                                 result = self.propgation(
                                     desss.getInput(2), desss, s, y, is_in_a_loop
                                 )
