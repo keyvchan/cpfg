@@ -42,17 +42,6 @@ class Propgation:
     address: GhidraPackage = None
     ghidra: GhidraPackage = None
     flatapi: GhidraPackage = None
-    # flat api
-    # getByte: GhidraGlobalFunction
-    # getDataAt: GhidraGlobalFunction
-    # getFunctionAt: GhidraGlobalFunction
-    # getFunctionContaining: GhidraGlobalFunction
-    # getInstructionAt: GhidraGlobalFunction
-    # getInstructionContaining: GhidraGlobalFunction
-    # getInt: GhidraGlobalFunction
-    # getReferencesTo: GhidraGlobalFunction
-    # getSymbolAt: GhidraGlobalFunction
-    # getUndefinedDataAt: GhidraGlobalFunction
 
     cast_functions = ["_atoi", "_itoa"]
 
