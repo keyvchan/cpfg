@@ -1,4 +1,5 @@
 import z3
+
 from rich.logging import RichHandler
 import typing
 import logging
@@ -20,14 +21,27 @@ GhidraGlobalFunction = typing.Callable
 PcodeVarnode = typing.Any
 
 
+def AddEqual(s, x, y):
+    if x.size() < y.size():
+        log.debug("ext")
+        s.add(z3.SignExt(y.size() - x.size(), x) == y)
+    elif x.size() > y.size():
+        log.debug("ext")
+        s.add(z3.SignExt(x.size() - y.size(), y) == x)
+    else:
+        log.debug("un ext")
+        s.add(x == y)
+
+
 class Propgation:
 
     # useful variables
     high_function: GhidraVariable = None
     ops: PcodeOperation = None
     decomplib: GhidraVariable = None
-    monitor: GhidraVariable = None
+    # monitor: GhidraVariable = None
     func: GhidraVariable = None
+    # currentProgram: GhidraVariable = None
 
     # Global variable
     multiequals = {}
@@ -36,17 +50,20 @@ class Propgation:
     # package
     pcode: GhidraPackage = None
     symbol: GhidraPackage = None
-
+    address: GhidraPackage = None
+    ghidra: GhidraPackage = None
+    flatapi: GhidraPackage = None
     # flat api
-    getByte: GhidraGlobalFunction
-    getDataAt: GhidraGlobalFunction
-    getFunctionAt: GhidraGlobalFunction
-    getFunctionContaining: GhidraGlobalFunction
-    getInstructionAt: GhidraGlobalFunction
-    getInstructionContaining: GhidraGlobalFunction
-    getInt: GhidraGlobalFunction
-    getReferencesTo: GhidraGlobalFunction
-    getSymbolAt: GhidraGlobalFunction
+    # getByte: GhidraGlobalFunction
+    # getDataAt: GhidraGlobalFunction
+    # getFunctionAt: GhidraGlobalFunction
+    # getFunctionContaining: GhidraGlobalFunction
+    # getInstructionAt: GhidraGlobalFunction
+    # getInstructionContaining: GhidraGlobalFunction
+    # getInt: GhidraGlobalFunction
+    # getReferencesTo: GhidraGlobalFunction
+    # getSymbolAt: GhidraGlobalFunction
+    # getUndefinedDataAt: GhidraGlobalFunction
 
     cast_functions = ["_atoi", "_itoa"]
 
@@ -59,7 +76,7 @@ class Propgation:
     handled_INDIRECT = []
     INDIRECT_list = []
 
-    def __init__(self, high_function, ops, func, imported_dict, bit_size=32):
+    def __init__(self, high_function, ops, func, decomplib, bridge, bit_size=32):
         self.high_function = high_function
         self.ops = ops
         self.func = func
@@ -70,38 +87,21 @@ class Propgation:
 
         self.uncertain = self.INT_MAX
 
-        if "decomplib" in imported_dict:
-            self.decomplib = imported_dict["decomplib"]
-        if "monitor" in imported_dict:
-            self.monitor = imported_dict["monitor"]
+        self.decomplib = decomplib
 
-        if "pcode" in imported_dict:
-            self.pcode = imported_dict["pcode"]
-        if "symbol" in imported_dict:
-            self.symbol = imported_dict["symbol"]
-
-        if "getByte" in imported_dict:
-            self.getByte = imported_dict["getByte"]
-        if "getDataAt" in imported_dict:
-            self.getDataAt = imported_dict["getDataAt"]
-        if "getFunctionAt" in imported_dict:
-            self.getFunctionAt = imported_dict["getFunctionAt"]
-        if "getFunctionContaining" in imported_dict:
-            self.getFunctionContaining = imported_dict["getFunctionContaining"]
-        if "getInstructionAt" in imported_dict:
-            self.getInstructionAt = imported_dict["getInstructionAt"]
-        if "getInstructionContaining" in imported_dict:
-            self.getInstructionContaining = imported_dict["getInstructionContaining"]
-        if "getInt" in imported_dict:
-            self.getInt = imported_dict["getInt"]
-        if "getReferencesTo" in imported_dict:
-            self.getReferencesTo = imported_dict["getReferencesTo"]
-        if "getSymbolAt" in imported_dict:
-            self.getSymbolAt = imported_dict["getSymbolAt"]
+        if bridge != None:
+            self.flatapi = bridge.get_flat_api(namespace=locals())
+            self.ghidra = bridge.get_ghidra_api()
+        else:
+            log.error("pass bridge object to the class")
+            return
+        self.pcode = self.ghidra.program.model.pcode
+        self.symbol = self.ghidra.program.model.symbol
+        self.address = self.ghidra.program.model.address
 
     def decompile(self, func):
 
-        res = self.decomplib.decompileFunction(func, 60, self.monitor)
+        res = self.decomplib.decompileFunction(func, 60, self.flatapi.monitor)
         high = res.getHighFunction()
         return high
 
@@ -112,6 +112,10 @@ class Propgation:
             indirect_operation.getInput(0).getPCAddress(),
             indirect_operation.getInput(1).getOffset(),
         )
+        print(seqnum)
+
+        if self.high_function.getPcodeOp(seqnum) != None:
+            print(self.high_function.getPcodeOp(seqnum))
         ops = self.high_function.getPcodeOps(seqnum.getTarget())
         return ops
 
@@ -120,21 +124,14 @@ class Propgation:
     ) -> z3.BitVecNumRef | None:
         log.info("handle constant: %s", input)
 
-        y = z3.BitVec(input.toString(), self.bit_size)
+        y = z3.BitVec(input.toString(), input.getSize() * 8)
+        val = z3.BitVecVal(input.getOffset(), input.getSize() * 8)
 
         # A very clumsy way to fit the size requirement, should do better.
-        if x.size() != y.size():
-            s.add(z3.ZeroExt(y.size() - x.size(), x) == y, y == input.getOffset())
-        else:
-            s.add(x == y, y == input.getOffset())
-        status = s.check()
-        if status == z3.sat:
-            log.debug("path: \n %s", s)
-            result = s.model().eval(x)
-            return result.sign_as_bv()
+        AddEqual(s, x, y)
 
-        else:
-            log.error("Not sat, may be a bug: %s", s)
+        s.add(y == val)
+        return val
 
     def handle_INDIRECT(
         self,
@@ -157,14 +154,15 @@ class Propgation:
 
             y = z3.BitVec(
                 last_operation.getInput(0).toString(),
-                # last_operation.getInput(0).getSize() * 8,
-                self.bit_size,
+                last_operation.getInput(0).getSize() * 8,
+                # self.bit_size,
             )
+            AddEqual(s, x, y)
             block = last_operation.getParent()
             iter = block.getIterator()
             for op1 in iter:
                 if op1.getOpcode() == self.pcode.PcodeOp.CALL:
-                    func = self.getFunctionAt(op1.getInput(0).getAddress())
+                    func = self.flatapi.getFunctionAt(op1.getInput(0).getAddress())
                     if func.getName() == "_fscanf":
                         log.debug(
                             "The INDIRECT is in the same block of this call: %s, which is can not be trusted",
@@ -175,7 +173,7 @@ class Propgation:
 
             val = None
 
-            s.push()
+            # s.push()
             result = self.propgation(input0, input0.getDef(), s, y, is_in_a_loop)
 
             if result == None:
@@ -186,8 +184,9 @@ class Propgation:
                 val = result
 
             # print(val)
-            s.pop()
-            s.add(x == val)
+            # s.pop()
+
+            s.add(y == val)
 
             return val
 
@@ -202,7 +201,7 @@ class Propgation:
                 last_operation.getInput(0).toString(),
                 self.bit_size,
             )
-            s.add(x == y)
+            AddEqual(s, x, y)
             return self.propgation(
                 last_operation.getInput(0), last_operation, s, y, is_in_a_loop
             )
@@ -216,24 +215,106 @@ class Propgation:
         else:
             y = z3.BitVec(
                 last_operation.getInput(0).toString(),
-                self.bit_size,
+                last_operation.getInput(0).getSize() * 8,
             )
-            s.add(x == y)
-            return self.propgation(
+            log.debug(y.size())
+            AddEqual(s, x, y)
+            result = self.propgation(
                 last_operation.getInput(0), last_operation, s, y, is_in_a_loop
             )
+
+            # s.add(y == result)
+            return result
+
+    def __back_trace(self, block):
+        # back trace the block, until
+        if block.getInSize() == 0:
+            back_block = None
+        elif block.getInSize() == 1:
+            back_block = block.getIn(0)
+        else:
+            size = block.getInSize()
+            smallest = block.getin(0)
+            for i in range(0, size):
+                IN = smallest.getIn(i)
+                # calcDepth < 0, smallest > out
+                if smallest.calcDepth(IN) < 0:
+                    smallest = IN
+            back_block = smallest
+        return back_block
+
+    def __forward_trace(self, block):
+        # forward trace the block, unitl found a block has out size 1
+        if block.getOutSize() == 0:
+            forward_block = None
+        elif block.getOutSize() == 1:
+            forward_block = block.getOut(0)
+        else:
+            size = block.getOutSize()
+            biggest = block.getOut(0)
+            for i in range(0, size):
+                out = block.getOut(i)
+                # calcDepth >= 0, biggest <= out
+                if biggest.calcDepth(out) >= 0:
+                    biggest = out
+            forward_block = biggest
+
+        return forward_block
+
+    def __trace(self, back_block, forward_block) -> bool:
+        # first we check back_block and forward_block in size and out size for the first times
+        # back_block is None, which mean it's
+
+        if back_block == None or forward_block == None:
+            return False
+
+        # It's the first time enter this function
+        if back_block.getInSize() == 1 and forward_block.getInSize() == 1:
+            if back_block.getIn(0) == forward_block.getOut(0):
+                return True
+            else:
+                pass
+                return False
+
+        else:
+
+            if back_block.getInSize() == 1:
+                new_back_block = back_block
+            else:
+                new_back_block = self.__back_trace(back_block)
+
+            if forward_block.getOutSize() == 1:
+                new_forward_block = forward_block
+            else:
+                new_forward_block = self.__forward_trace(forward_block)
+
+            print("back", back_block, back_block.getInSize())
+            print("forward", forward_block, forward_block.getOutSize())
+            result = self.__trace(new_back_block, new_forward_block)
+
+        return result
 
     def loop_check(self, last_operation):
         log.info("Checking %s in a loop or not", last_operation)
 
         block = last_operation.getParent()
 
+        # result = self.__trace(block, block)
+        # back trace until the block A has in from after block
+
+        # then forward trace until the block B has out to previous block
+
+        # equal, the loop is block A--B
+        # Not equal, continue back trace
+
         if block.getInSize() == 1 and block.getOutSize() == 1:
             if block.getIn(0) == block.getOut(0):
                 log.debug("It it in a loop")
                 return True
 
-        return False
+        result = False
+
+        return result
 
     def check_condition(self, input, original_op):
         log.info("Checking condition of %s", input)
@@ -249,8 +330,9 @@ class Propgation:
                 log.debug("loop initilizer")
             is_loop = True
 
+        result = True
         if is_loop:
-            return True
+            return result
         else:
 
             input0 = last_operation.getInput(0)
@@ -258,6 +340,7 @@ class Propgation:
             y = z3.BitVec(input0.toString(), self.bit_size)
             z = z3.BitVec(input1.toString(), self.bit_size)
             s = z3.Solver()
+            input1_val = z3.BitVecVal(input1.getOffset(), input1.getSize() * 8)
 
             if last_operation.getOpcode() == self.pcode.PcodeOp.INT_SLESS:
                 log.info("It is a INT_SLESS, checking %s < %s", y, z)
@@ -265,36 +348,29 @@ class Propgation:
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                s.add(z == input1.getOffset())
+                AddEqual(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(y < z)
                     log.debug("%s < %s is %s", y, z, result)
-                    return result
             if last_operation.getOpcode() == self.pcode.PcodeOp.INT_LESS:
                 log.info("It is a INT_LESS, checking %s < %s", y, z)
                 block = last_operation.getParent()
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                s.add(z == input1.getOffset())
+                AddEqual(s, z, input1_val)
                 if s.check() == z3.sat:
                     result = s.model().eval(z3.ULT(y, z))
                     log.debug("%s < %s is %s", y, z, result)
-                    return result
             elif last_operation.getOpcode() == self.pcode.PcodeOp.INT_NOTEQUAL:
                 log.info("It is a INT_NOTEQUAL, checking %s != %s", y, z)
                 value = self.propgation(
                     last_operation.getInput(0), last_operation, s, y, False
                 )
-                if isinstance(value, Uncertain):
-                    log.debug("The value can't be determained")
-                    return self.uncertain
-                else:
-                    s.add(y != z, y == value, z == input1.getOffset())
-                    if s.check() == z3.sat:
-                        result = s.model().eval(y != z)
-                        log.debug("%s != %s is %s", y, z, result)
-                        return result
+                AddEqual(s, z, input1_val)
+                if s.check() == z3.sat:
+                    result = s.model().eval(y != z)
+                    log.debug("%s != %s is %s", y, z, result)
             elif last_operation.getOpcode() == self.pcode.PcodeOp.INT_EQUAL:
                 log.info("It is a INT_EQUAL, checking %s = %s", y, z)
                 value = self.propgation(
@@ -303,26 +379,24 @@ class Propgation:
 
                 block = last_operation.getParent()
 
-                if isinstance(value, Uncertain):
-                    log.debug("The value can't be determained")
-                    return self.uncertain
-                else:
-                    s.add(y == value, z == input1.getOffset())
-                    if s.check() == z3.sat:
-                        result = s.model().eval(y == z)
-                        log.debug("%s == %s is %s", y, z, result)
-                        if original_op.getParent() == block.getTrueOut():
-                            log.debug("this branch is taken when condition is True ")
-                            if result == True:
-                                result = True
-                        if original_op.getParent() == block.getFalseOut():
-                            log.debug("this branch is taken when condition is False ")
-                            if result == False:
-                                result = True
-                        return result
+                AddEqual(s, z, input1_val)
+                if s.check() == z3.sat:
+                    result = s.model().eval(y == z)
+                    log.debug("%s == %s is %s", y, z, result)
 
             else:
                 log.error("Not implementated yet")
+
+            if original_op.getParent() == block.getTrueOut():
+                log.debug("this branch is taken when condition is True ")
+                if result == True:
+                    result = True
+            if original_op.getParent() == block.getFalseOut():
+                log.debug("this branch is taken when condition is False ")
+                if result == False:
+                    result = True
+
+            return result
 
     # TODO: need more attentation.
     def handle_MULTIEQUAL(self, last_operation, s: z3.Solver, x, is_in_a_loop):
@@ -399,8 +473,13 @@ class Propgation:
                                         log.debug("depth < 0, it is a succcesser block")
                                         # print("depth: ", block.calcDepth(last_block))
                                         s.push()
+
+                                        y = z3.BitVec(
+                                            input.toString(), input.getSize() * 8
+                                        )
+                                        AddEqual(s, x, y)
                                         result = self.propgation(
-                                            input, last_operation, s, x, is_in_a_loop
+                                            input, last_operation, s, y, is_in_a_loop
                                         )
                                         if result != None:
                                             log.info(
@@ -424,8 +503,10 @@ class Propgation:
                                     "last_block is None, %s is the first input", input
                                 )
                                 s.push()
+                                y = z3.BitVec(input.toString(), input.getSize() * 8)
+                                AddEqual(s, x, y)
                                 result = self.propgation(
-                                    input, last_operation, s, x, is_in_a_loop
+                                    input, last_operation, s, y, is_in_a_loop
                                 )
                                 inputX = {
                                     "value": result,
@@ -446,8 +527,10 @@ class Propgation:
                                 "The condition is uncertain, need to perserve the value"
                             )
                             s.push()
+                            y = z3.BitVec(input.toString(), input.getSize() * 8)
+                            AddEqual(s, x, y)
                             result = self.propgation(
-                                input, last_operation, s, x, is_in_a_loop
+                                input, last_operation, s, y, is_in_a_loop
                             )
                             inputX = {
                                 "value": result,
@@ -470,8 +553,10 @@ class Propgation:
                     else:
                         log.info("input not from cbranch, do the normal analysis")
                         s.push()
+                        y = z3.BitVec(input.toString(), input.getSize() * 8)
+                        AddEqual(s, x, y)
                         result = self.propgation(
-                            input, last_operation, s, x, is_in_a_loop
+                            input, last_operation, s, y, is_in_a_loop
                         )
                         inputX = {
                             "value": result,
@@ -489,7 +574,9 @@ class Propgation:
                         "block has multiple or zero in blocks, it could be a entry block"
                     )
                     s.push()
-                    result = self.propgation(input, last_operation, s, x, is_in_a_loop)
+                    y = z3.BitVec(input.toString(), input.getSize() * 8)
+                    AddEqual(s, x, y)
+                    result = self.propgation(input, last_operation, s, y, is_in_a_loop)
                     inputX = {
                         "value": result,
                         "postion": postion,
@@ -536,14 +623,7 @@ class Propgation:
         if value != None:
 
             # print(x.size(), value.size())
-            if x.size() != value.size():
-                print("ext")
-                s.add(z3.SignExt(value.size() - x.size(), x) == value)
-                log.debug(value.as_signed_long())
-            else:
-                print("un ext")
-                s.add(x == value)
-                log.debug(value.as_signed_long())
+            AddEqual(s, x, value)
 
             log.debug(value.as_signed_long())
 
@@ -558,7 +638,7 @@ class Propgation:
         log.info("handle function CALL: %s", operation)
 
         # print("Found CALL: ", s)
-        f = self.getFunctionAt(operation.getInput(0).getAddress())
+        f = self.flatapi.getFunctionAt(operation.getInput(0).getAddress())
         log.debug("The function is %s", f)
 
         if f.getName() in self.cast_functions:
@@ -596,14 +676,43 @@ class Propgation:
             return self.uncertain
 
         if f.getName() == "strlen":
-            print(f)
-            print(operation.getInput(1))
-            print(operation.getInput(1).getDef())
+            # print(f)
+            # print(operation.getInput(1))
+            # print(operation.getInput(1).getDef())
 
-            input1 = self.propgation(
-                operation.getInput(1), operation, s, x, is_in_a_loop
+            y = z3.BitVec(
+                "sizeOf(" + operation.getInput(1).toString() + ")",
+                operation.getInput(1).getSize() * 8,
             )
-            print(input1)
+            # print(
+            #     operation.getInput(1).getDef().getSeqnum(),
+            #     operation.getInput(1).getDef(),
+            # )
+            # print(
+            #     operation.getInput(1).getDef().getInput(0).getDef().getSeqnum(),
+            #     operation.getInput(1).getDef().getInput(0).getDef(),
+            # )
+            AddEqual(s, x, y)
+            input1 = self.propgation(
+                operation.getInput(1), operation, s, y, is_in_a_loop
+            )
+            # s.add(y == input1)
+
+            # Analyzing INDIRECT after this call
+            # ops = self.high_function.getPcodeOps(operation.getSeqnum().getTarget())
+            # for op in ops:
+            #     print(op)
+            #     if op.getOpcode() == self.pcode.PcodeOp.INDIRECT:
+            #         print("There are indirect, start analysis")
+            #         opss = self.get_INDIRECT_operation(op)
+            #         for opp in opss:
+            #             if opp.getOpcode() == self.pcode.PcodeOp.CALL:
+            #                 if opp.getSeqnum().compareTo(op.getSeqnum()):
+            #                     print("print: ", opp.getSeqnum(), opp)
+            #                     f = self.getFunctionAt(opp.getInput(0).getAddress())
+
+            #                     print(f)
+
             return input1
 
         else:
@@ -640,15 +749,17 @@ class Propgation:
 
         address = input.getAddress()
 
-        out = self.getReferencesTo(address)
+        out = self.flatapi.getReferencesTo(address)
         for element in out:
             if element.getReferenceType() == self.symbol.DataRefType.WRITE:
                 if element.isOperandReference():
 
-                    f1 = self.getFunctionContaining(element.getFromAddress())
+                    f1 = self.flatapi.getFunctionContaining(element.getFromAddress())
 
                     log.warning("current function: %s", f1)
-                    instruct = self.getInstructionContaining(element.getFromAddress())
+                    instruct = self.flatapi.getInstructionContaining(
+                        element.getFromAddress()
+                    )
                     # op1 = instruct.getPcode()[element.getOperandIndex()]
 
                     high = self.decompile(f1)
@@ -660,17 +771,22 @@ class Propgation:
 
         # TODO: Found a way to get the data of a global variable.
         # TODO: We assume that the data here is a integer, so read it by using getByte
-        value = self.getByte(input.getAddress())
+        value = self.flatapi.getByte(input.getAddress())
         log.debug("The value in %s is %s", input, value)
 
-        value = z3.BitVecVal(value, self.bit_size)
+        value = z3.BitVecVal(value, x.size())
+        AddEqual(s, x, value)
         return value
 
     def handle_Register(self, input, s, x):
         log.info("handle Register")
         reg = self.func.getProgram().getRegister(input.getAddress(), input.getSize())
+        y = z3.BitVec(input.toString(), input.getSize() * 8)
+        AddEqual(s, x, y)
 
         value = z3.BitVecVal(reg.getBitLength(), self.bit_size)
+        s.add(y == value)
+
         return value
 
     def handle_LOAD(self, operation, s, x, is_in_a_loop) -> Uncertain | None:
@@ -689,11 +805,11 @@ class Propgation:
         log.info("Okay, the input is parameter or a global variables, do the rest")
         # Assume the denominator is function's parameter, found cross reference of this function, then trace it
         # TODO: very limited, should cover more edge cases.
-        refs = self.getReferencesTo(self.func.getEntryPoint())
+        refs = self.flatapi.getReferencesTo(self.func.getEntryPoint())
         for ref in refs:
             # print(ref)
             if ref.getReferenceType() == self.symbol.RefType.UNCONDITIONAL_CALL:
-                fff = self.getFunctionContaining(ref.getFromAddress())
+                fff = self.flatapi.getFunctionContaining(ref.getFromAddress())
                 fffhigh = self.decompile(fff)
                 log.debug("Tracing in %s", fff)
                 ops = fffhigh.getPcodeOps()
@@ -744,12 +860,12 @@ class Propgation:
 
             value = z3.BitVecVal(val, self.bit_size)
             s.pop()
-            s.add(x == val)
+            AddEqual(s, x, value)
 
         if input1.isConstant():
             s.push()
             result = self.propgation(input0, input0.getDef(), s, y, is_in_a_loop)
-            print(result)
+            log.debug(result)
             if result == None:
                 val = None
                 s.pop()
@@ -758,12 +874,12 @@ class Propgation:
             else:
                 val = input1.getOffset() + result.as_signed_long()
 
-                print(type(val))
+                log.debug(type(val))
 
                 value = z3.BitVecVal(val, self.bit_size)
 
                 s.pop()
-                s.add(x == value)
+                AddEqual(s, x, value)
 
                 return value
 
@@ -787,7 +903,7 @@ class Propgation:
 
             value = z3.BitVecVal(val, self.bit_size)
             s.pop()
-            s.add(x == val)
+            AddEqual(s, x, val)
 
         if input1.isConstant():
             s.push()
@@ -806,7 +922,7 @@ class Propgation:
                 value = z3.BitVecVal(val, self.bit_size)
 
                 s.pop()
-                s.add(x == value)
+                AddEqual(s, x, value)
 
                 return value
 
@@ -869,7 +985,7 @@ class Propgation:
         val = input0 & input1.getOffset()
         s.pop()
 
-        s.add(x == val)
+        AddEqual(s, x, val)
 
         return val
 
@@ -892,7 +1008,7 @@ class Propgation:
                 val = input0.getOffset() % result.as_signed_long()
 
             s.pop()
-            s.add(x == val)
+            AddEqual(s, x, val)
 
         if input1.isConstant():
             s.push()
@@ -903,7 +1019,7 @@ class Propgation:
                 val = result.as_signed_long() % input1.getOffset()
 
             s.pop()
-            s.add(x == val)
+            AddEqual(s, x, val)
 
         return val
 
@@ -918,7 +1034,7 @@ class Propgation:
         # x = z3.SignExt(size - x.size(), x)
         y = z3.BitVec(input0.toString(), input0.getSize() * 8)
 
-        s.add(x == z3.SignExt(x.size() - y.size(), y))
+        AddEqual(s, x, y)
         return self.propgation(input0, last_operation, s, y, is_in_a_loop)
 
     def handle_CALLIND(self, last_operation, s, x, is_in_a_loop):
@@ -928,20 +1044,62 @@ class Propgation:
 
         # Check the right value is a constant
         y = z3.BitVec(input0.toString(), input0.getSize() * 8)
-        s.add(x == y)
+        AddEqual(s, x, y)
 
         return self.propgation(input0, last_operation, s, y, is_in_a_loop)
 
     def handle_PTRSUB(self, last_operation, s, x, is_in_a_loop):
         log.info("Handle PTRSUB: %s", last_operation)
-        input0 = last_operation.getInput(0)
-        # input1 = last_operation.getInput(1)
-        # print(input0.isInput())
-        val = self.propgation(input0, last_operation, s, x, is_in_a_loop)
-        # print(val)
 
-        result = z3.BitVecVal(val.as_signed_long(), self.bit_size)
-        return result
+        # input0 = last_operation.getInput(0)
+        # input1 = last_operation.getInput(1)
+
+        dest_address = self.pcode.HighFunctionDBUtil.getSpacebaseReferenceAddress(
+            self.flatapi.currentProgram, last_operation
+        )
+        # print(dest_address)
+
+        list = []
+
+        block = last_operation.getParent()
+        ops = block.getIterator()
+        for op in ops:
+            if op.getOpcode() == self.pcode.PcodeOp.PTRSUB:
+                op_address = self.pcode.HighFunctionDBUtil.getSpacebaseReferenceAddress(
+                    self.flatapi.currentProgram, op
+                )
+                if op_address == dest_address:
+                    list.append(op)
+
+        print(list)
+
+        for l in list:
+            des = l.getOutput().getDescendants()
+            for de in des:
+                if de.getOpcode() == self.pcode.PcodeOp.CALL:
+                    # print(de)
+                    pass
+                if de.getOpcode() == self.pcode.PcodeOp.CAST:
+                    # print(de)
+                    dess = de.getOutput().getDescendants()
+                    for desss in dess:
+                        if desss.getOpcode() == self.pcode.PcodeOp.CALL:
+                            # print(desss)
+                            func = self.flatapi.getFunctionAt(
+                                desss.getInput(0).getAddress()
+                            )
+                            # print(func)
+                            if func.getName() == "strcpy":
+                                y = z3.BitVec(
+                                    desss.getInput(2).toString(),
+                                    desss.getInput(2).getSize() * 8,
+                                )
+                                AddEqual(s, x, y)
+                                result = self.propgation(
+                                    desss.getInput(2), desss, s, y, is_in_a_loop
+                                )
+                                return result
+        return None
 
     def propgation(
         self, varnode, current_operation, s: z3.Solver, x, is_in_a_loop=False
@@ -955,9 +1113,13 @@ class Propgation:
         if is_in_a_loop:
             log.warning("It is in a loop, start loop summarization")
             info = self.loop_info(current_operation)
-            # print(info)
-            stride = info["stride"]
-            times = info["times"]
+            if info != None:
+                # print(info)
+                stride = info["stride"]
+                times = info["times"]
+            else:
+                stride = 0
+                times = 0
 
             init_value_solver = z3.Solver()
             x = z3.BitVec(varnode.toString(), varnode.getSize() * 8)
@@ -966,15 +1128,17 @@ class Propgation:
                 varnode, current_operation, init_value_solver, x, False
             )
 
-            if not isinstance(value, int):
+            if value != None:
                 value = value.as_long()
 
-            if current_operation.getOpcode() == self.pcode.PcodeOp.INT_ADD:
-                result = value + stride * times
-                result = z3.BitVecVal(result, self.bit_size)
-                return result
+                if current_operation.getOpcode() == self.pcode.PcodeOp.INT_ADD:
+                    result = value + stride * times
+                    result = z3.BitVecVal(result, self.bit_size)
+                    return result
+                else:
+                    log.error("Not handled yet")
             else:
-                log.error("Not handled yet")
+                log.error("value is None")
 
         else:
             log.warning("It is not in a loop")
@@ -1035,12 +1199,11 @@ class Propgation:
             log.error("last_operation is None, not implementated yet")
         return None
 
-    def constant_propgation(
-        self, varnode, operation
-    ) -> Uncertain | z3.BitVecNumRef | None:
+    def constant_propgation(self, varnode, operation):
         # taking consider of all indirect operation
         self.multiequals.clear()
         self.visited_operation.clear()
+        self.current_operation = operation
 
         s = z3.Solver()
         x = z3.BitVec(varnode.toString(), self.bit_size)
@@ -1061,7 +1224,7 @@ class Propgation:
                 ops = self.get_INDIRECT_operation(operation_temp)
                 for _, op in enumerate(ops):
                     if op.getOpcode() == self.pcode.PcodeOp.CALL:
-                        func = self.getFunctionAt(op.getInput(0).getAddress())
+                        func = self.flatapi.getFunctionAt(op.getInput(0).getAddress())
                         log.info("Found a call: %s", func)
                         if func.getName() == "_fscanf":
                             log.debug(
@@ -1077,6 +1240,17 @@ class Propgation:
         log.debug("INDIRECT is not releated to %s", varnode)
         # User input source not found, fallback to normal analysis.
         result = self.propgation(varnode, operation, s, x, None)
-        self.multiequals.clear()
-        self.visited_operation.clear()
-        return result
+        log.debug(s)
+        status = s.check()
+        if status == z3.sat:
+            log.debug("path: \n %s", s)
+            result = s.model().eval(x)
+            self.multiequals.clear()
+            self.visited_operation.clear()
+            return result
+
+        else:
+            log.error("Not sat, may be a bug: %s", s)
+            self.multiequals.clear()
+            self.visited_operation.clear()
+            return result
