@@ -1,6 +1,7 @@
 import z3
 import z3_warpper
 
+
 from rich.logging import RichHandler
 import typing
 import logging
@@ -90,7 +91,6 @@ class Propgation:
             indirect_operation.getInput(0).getPCAddress(),
             indirect_operation.getInput(1).getOffset(),
         )
-        print(seqnum)
 
         if self.high_function.getPcodeOp(seqnum) != None:
             print(self.high_function.getPcodeOp(seqnum))
@@ -108,7 +108,7 @@ class Propgation:
         # A very clumsy way to fit the size requirement, should do better.
         z3_warpper.equal(s, x, y)
 
-        s.add(y == val)
+        z3_warpper.equal(s, y, val)
         return val
 
     def handle_INDIRECT(
@@ -170,19 +170,15 @@ class Propgation:
 
     def handle_COPY(self, last_operation, s, x, is_in_a_loop):
         log.info("Handle COPY: %s", last_operation)
+        input0 = last_operation.getInput(0)
+        input1 = last_operation.getInput(1)
 
-        # Check the right value is a constant
-        if last_operation.getInput(0).isConstant():
-            return self.handle_Constant(last_operation.getInput(0), s, x)
-        else:
-            y = z3.BitVec(
-                last_operation.getInput(0).toString(),
-                self.bit_size,
-            )
-            z3_warpper.equal(s, x, y)
-            return self.propgation(
-                last_operation.getInput(0), last_operation, s, y, is_in_a_loop
-            )
+        y = z3.BitVec(input0.toString(), input0.getSize())
+        z = z3.BitVec(input1.toString(), input1.getSize())
+
+        z3_warpper.add(s, x, y, z)
+        self.propgation(input0, last_operation, s, y, is_in_a_loop)
+        self.propgation(input0, last_operation, s, z, is_in_a_loop)
 
     def handle_CAST(self, last_operation, s, x, is_in_a_loop):
         log.info("Handle CAST: %s", last_operation)
@@ -654,42 +650,14 @@ class Propgation:
             return self.uncertain
 
         if f.getName() == "strlen":
-            # print(f)
-            # print(operation.getInput(1))
-            # print(operation.getInput(1).getDef())
-
             y = z3.BitVec(
                 "sizeOf(" + operation.getInput(1).toString() + ")",
                 operation.getInput(1).getSize() * 8,
             )
-            # print(
-            #     operation.getInput(1).getDef().getSeqnum(),
-            #     operation.getInput(1).getDef(),
-            # )
-            # print(
-            #     operation.getInput(1).getDef().getInput(0).getDef().getSeqnum(),
-            #     operation.getInput(1).getDef().getInput(0).getDef(),
-            # )
             z3_warpper.equal(s, x, y)
             input1 = self.propgation(
                 operation.getInput(1), operation, s, y, is_in_a_loop
             )
-            # s.add(y == input1)
-
-            # Analyzing INDIRECT after this call
-            # ops = self.high_function.getPcodeOps(operation.getSeqnum().getTarget())
-            # for op in ops:
-            #     print(op)
-            #     if op.getOpcode() == self.pcode.PcodeOp.INDIRECT:
-            #         print("There are indirect, start analysis")
-            #         opss = self.get_INDIRECT_operation(op)
-            #         for opp in opss:
-            #             if opp.getOpcode() == self.pcode.PcodeOp.CALL:
-            #                 if opp.getSeqnum().compareTo(op.getSeqnum()):
-            #                     print("print: ", opp.getSeqnum(), opp)
-            #                     f = self.getFunctionAt(opp.getInput(0).getAddress())
-
-            #                     print(f)
 
             return input1
 

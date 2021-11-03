@@ -18,3 +18,17 @@ def equal(s, x, y):
     else:
         log.debug("un ext")
         s.add(x == y)
+
+
+# Apply sign extend when use s.add()
+# size of y and z should the same
+def add(s, x, y, z):
+    if x.size() < y.size():
+        log.debug("ext")
+        s.add(z3.SignExt(y.size() - x.size(), x) == y + z)
+    elif x.size() > y.size():
+        log.debug("ext")
+        s.add(z3.SignExt(x.size() - y.size(), y) == x + z)
+    else:
+        log.debug("un ext")
+        s.add(x == y + z)
